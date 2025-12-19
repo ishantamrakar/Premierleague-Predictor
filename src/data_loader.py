@@ -70,10 +70,70 @@ class PremierLeagueDataLoader:
         processed_df['HomeTeam_Form'] = home_form_list
         processed_df['AwayTeam_Form'] = away_form_list
 
-        self.processed_data = processed_df
+        processed_df['Home_Gameweek'] = processed_df.groupby(['Season', 'HomeTeam']).cumcount() + 1
+        processed_df['Away_Gameweek'] = processed_df.groupby(['Season', 'AwayTeam']).cumcount() + 1
+        processed_df['Match_of_the_Season'] = processed_df[['Home_Gameweek', 'Away_Gameweek']].max(axis=1)
+        processed_df.drop(columns=['Home_Gameweek', 'Away_Gameweek'], inplace=True)
 
+        h2h_home_wins_list = []
+        h2h_draws_list = []
+        h2h_away_wins_list = []
+        h2h_home_avg_goals_list = []
+        h2h_away_avg_goals_list = []
+
+        for index, row in processed_df.iterrows():
+            home_team = row['HomeTeam']
+            away_team = row['AwayTeam']
+            match_date = row['MatchDate']
+
+            h2h_matches = processed_df[
+                ((processed_df['HomeTeam'] == home_team) & (processed_df['AwayTeam'] == away_team)) |
+                ((processed_df['HomeTeam'] == away_team) & (processed_df['AwayTeam'] == home_team))
+            ].loc[processed_df['MatchDate'] < match_date]
+
+            if not h2h_matches.empty:
+                home_wins = 0
+                draws = 0
+                away_wins = 0
+                home_goals = []
+                away_goals = []
+
+                for _, h2h_row in h2h_matches.iterrows():
+                    if h2h_row['HomeTeam'] == home_team:
+                        if h2h_row['FullTimeResult'] == 'H': home_wins += 1
+                        elif h2h_row['FullTimeResult'] == 'D': draws += 1
+                        else: away_wins += 1
+                        home_goals.append(h2h_row['FullTimeHomeGoals'])
+                        away_goals.append(h2h_row['FullTimeAwayGoals'])
+                    else:
+                        if h2h_row['FullTimeResult'] == 'A': home_wins += 1
+                        elif h2h_row['FullTimeResult'] == 'D': draws += 1
+                        else: away_wins += 1
+                        home_goals.append(h2h_row['FullTimeAwayGoals'])
+                        away_goals.append(h2h_row['FullTimeHomeGoals'])
+                
+                total_h2h = len(h2h_matches)
+                h2h_home_wins_list.append(home_wins / total_h2h)
+                h2h_draws_list.append(draws / total_h2h)
+                h2h_away_wins_list.append(away_wins / total_h2h)
+                h2h_home_avg_goals_list.append(np.mean(home_goals) if home_goals else 0)
+                h2h_away_avg_goals_list.append(np.mean(away_goals) if away_goals else 0)
+            else:
+                h2h_home_wins_list.append(0.0)
+                h2h_draws_list.append(0.0)
+                h2h_away_wins_list.append(0.0)
+                h2h_home_avg_goals_list.append(0.0)
+                h2h_away_avg_goals_list.append(0.0)
+        
+        processed_df['H2H_HomeWins_Pct'] = h2h_home_wins_list
+        processed_df['H2H_Draws_Pct'] = h2h_draws_list
+        processed_df['H2H_AwayWins_Pct'] = h2h_away_wins_list
+        processed_df['H2H_Home_AvgGoals'] = h2h_home_avg_goals_list
+        processed_df['H2H_Away_AvgGoals'] = h2h_away_avg_goals_list
+
+        self.processed_data = processed_df
+        
     def get_dataloaders(self, batch_size=32, test_size=0.2, random_state=42):
-        """Returns train and test PyTorch DataLoaders."""
         if self.processed_data is None:
             return None, None
 
@@ -81,7 +141,9 @@ class PremierLeagueDataLoader:
             'HomeShots', 'AwayShots', 'HomeShotsOnTarget', 'AwayShotsOnTarget',
             'HomeCorners', 'AwayCorners', 'HomeFouls', 'AwayFouls',
             'HomeYellowCards', 'AwayYellowCards', 'HomeRedCards', 'AwayRedCards',
-            'HomeTeam_Form', 'AwayTeam_Form'
+            'HomeTeam_Form', 'AwayTeam_Form', 'Match_of_the_Season',
+            'H2H_HomeWins_Pct', 'H2H_Draws_Pct', 'H2H_AwayWins_Pct',
+            'H2H_Home_AvgGoals', 'H2H_Away_AvgGoals'
         ]
         
         existing_cols = [col for col in feature_cols if col in self.processed_data.columns]
@@ -113,7 +175,8 @@ if __name__ == '__main__':
         data_loader.preprocess_data()
         if data_loader.processed_data is not None:
             print(data_loader.processed_data[[
-                'MatchDate', 'HomeTeam', 'AwayTeam', 'HomeTeam_Form', 'AwayTeam_Form'
-            ]].head())
+                'MatchDate', 'HomeTeam', 'AwayTeam', 'Match_of_the_Season',
+                'H2H_HomeWins_Pct', 'H2H_Draws_Pct', 'H2H_AwayWins_Pct'
+            ]].sample(5))
 
 
