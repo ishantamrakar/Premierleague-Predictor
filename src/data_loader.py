@@ -53,14 +53,18 @@ class PremierLeagueDataLoader:
 
         processed_df = self.raw_data.copy()
 
+        # --- Filter out Draw cases for the experiment ---
+        processed_df = processed_df[processed_df['FullTimeResult'] != 'D'].copy()
+
         processed_df['MatchDate'] = pd.to_datetime(processed_df['MatchDate'], dayfirst=True)
         processed_df.sort_values(by='MatchDate', inplace=True)
 
-        result_mapping = {'A': 0, 'D': 1, 'H': 2}
+        # Map 'A' to 0 and 'H' to 1
+        result_mapping = {'A': 0, 'H': 1}
         processed_df['FTR_numerical'] = processed_df['FullTimeResult'].map(result_mapping)
         
-        home_points_map = {'H': 3, 'D': 1, 'A': 0}
-        away_points_map = {'A': 3, 'D': 1, 'H': 0}
+        home_points_map = {'H': 3, 'A': 0}
+        away_points_map = {'A': 3, 'H': 0}
         processed_df['HomePoints'] = processed_df['FullTimeResult'].map(home_points_map)
         processed_df['AwayPoints'] = processed_df['FullTimeResult'].map(away_points_map)
 
@@ -195,24 +199,22 @@ class PremierLeagueDataLoader:
         
         self.processed_data.dropna(subset=existing_cols + ['FTR_numerical', 'HomeTeam_ID', 'AwayTeam_ID'], inplace=True)
 
-        X = self.processed_data[existing_cols].values
-        y = self.processed_data['FTR_numerical'].values
-        home_team_ids = self.processed_data['HomeTeam_ID'].values
-        away_team_ids = self.processed_data['AwayTeam_ID'].values
-
         # --- Time-based Split ---
         seasons = sorted(self.processed_data['Season'].unique())
         latest_season = seasons[-1]
         
-        train_indices = self.processed_data[self.processed_data['Season'] != latest_season].index
-        test_indices = self.processed_data[self.processed_data['Season'] == latest_season].index
+        train_df = self.processed_data[self.processed_data['Season'] != latest_season]
+        test_df = self.processed_data[self.processed_data['Season'] == latest_season]
 
-        X_train, y_train = X[train_indices], y[train_indices]
-        home_team_ids_train, away_team_ids_train = home_team_ids[train_indices], away_team_ids[train_indices]
-
-        X_test, y_test = X[test_indices], y[test_indices]
-        home_team_ids_test, away_team_ids_test = home_team_ids[test_indices], away_team_ids[test_indices]
-
+        X_train = train_df[existing_cols].values
+        y_train = train_df['FTR_numerical'].values
+        home_team_ids_train = train_df['HomeTeam_ID'].values
+        away_team_ids_train = train_df['AwayTeam_ID'].values
+        
+        X_test = test_df[existing_cols].values
+        y_test = test_df['FTR_numerical'].values
+        home_team_ids_test = test_df['HomeTeam_ID'].values
+        away_team_ids_test = test_df['AwayTeam_ID'].values
 
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
         y_train_tensor = torch.tensor(y_train, dtype=torch.long)

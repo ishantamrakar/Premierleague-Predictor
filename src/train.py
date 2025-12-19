@@ -53,10 +53,10 @@ if __name__ == '__main__':
     INPUT_DIM_MODEL = 26 # This will be the input_dim to the first linear layer after embeddings are concatenated
 
     HIDDEN_DIM = 128
-    NUM_CLASSES = 3 # Home, Draw, Away
+    NUM_CLASSES = 2 # Home Win vs Away Win (Draws removed)
     LEARNING_RATE = 0.001
     BATCH_SIZE = 64
-    NUM_EPOCHS = 1000
+    NUM_EPOCHS = 20
 
     # Load data
     data_loader = PremierLeagueDataLoader(data_path='.')

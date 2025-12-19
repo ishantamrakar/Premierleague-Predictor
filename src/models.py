@@ -3,12 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MatchPredictor(nn.Module):
-    def __init__(self, input_dim, num_teams, embedding_dim=10, hidden_dim=128, num_classes=3):
+    def __init__(self, input_dim, num_teams, embedding_dim=10, hidden_dim=128, num_classes=2):
         super(MatchPredictor, self).__init__()
         self.team_embedding = nn.Embedding(num_teams, embedding_dim)
         
-        # Adjust input_dim to include the concatenated team embeddings
-        # input_dim + (2 * embedding_dim for home and away teams)
         self.fc1 = nn.Linear(input_dim + (2 * embedding_dim), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
         self.fc3 = nn.Linear(hidden_dim // 2, num_classes)
