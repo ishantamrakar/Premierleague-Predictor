@@ -1,45 +1,26 @@
 import torch
 import json
 import pandas as pd
+import numpy as np
 from models import MatchPredictor
-from data_loader import PremierLeagueDataLoader
+from data_loader import PremierLeagueDataLoader # Still needed for class definitions, but not for its processing logic directly
 
-def predict_match(home_team_name, away_team_name, data_loader, model, team_to_id):
+def predict_match(home_team_name, away_team_name, model, team_to_id, features_df):
     """
-    Predicts the outcome of a single, hypothetical future match by running the full
-    preprocessing pipeline on the historical data plus the new match.
+    Predicts the outcome of a single match using pre-calculated feature vectors.
     """
-    # 1. Create a hypothetical future match row
-    future_date = pd.to_datetime('2099-01-01')
-    
-    # Try to infer the 'season' for the new match, or default to the latest known
-    try:
-        latest_season = sorted(data_loader.raw_data['Season'].unique())[-1]
-    except (AttributeError, IndexError):
-        latest_season = "2025/26" # A sensible default if raw_data isn't loaded
+    print(f"Attempting to predict: {home_team_name} vs. {away_team_name}")
+    # print(f"Team mapping keys: {team_to_id.keys()}")
 
-    new_match_df = pd.DataFrame([{
-        'HomeTeam': home_team_name,
-        'AwayTeam': away_team_name,
-        'MatchDate': future_date,
-        'Season': latest_season
-    }])
+    # 1. Look up the pre-calculated feature vector for the match
+    match_row = features_df[(features_df['HomeTeam'] == home_team_name) & (features_df['AwayTeam'] == away_team_name)]
     
-    # 2. Append to the raw data and re-preprocess
-    # This is not performant but guarantees feature consistency
-    if data_loader.raw_data is not None:
-        data_loader.raw_data = pd.concat([data_loader.raw_data, new_match_df], ignore_index=True)
-    else:
-        print("Error: Raw data not loaded in data_loader.")
-        return
-        
-    print("Calculating features for the new match...")
-    data_loader.preprocess_data()
-    print("Feature calculation complete.")
+    if match_row.empty:
+        return f"Error: Fixture {home_team_name} vs. {away_team_name} not found in pre-calculated features."
     
-    # 3. Extract the features for our new match (the last row)
-    match_features = data_loader.processed_data.iloc[-1]
+    match_features = match_row.iloc[0] # Get the single row
     
+    # Feature columns must match the order used during training
     feature_cols = [
         'HomeShots', 'AwayShots', 'HomeShotsOnTarget', 'AwayShotsOnTarget', 'HomeCorners', 'AwayCorners',
         'HomeFouls', 'AwayFouls', 'HomeYellowCards', 'AwayYellowCards', 'HomeRedCards', 'AwayRedCards',
@@ -49,20 +30,19 @@ def predict_match(home_team_name, away_team_name, data_loader, model, team_to_id
         'Away_Weighted_Form'
     ]
     
-    # Fill any potential NaNs in the feature vector with 0
-    features_tensor = torch.tensor(match_features[feature_cols].fillna(0).values, dtype=torch.float32)
+    features_tensor = torch.tensor(match_features[feature_cols].values.astype(np.float32), dtype=torch.float32)
     
-    # 4. Get team IDs
+    # 2. Get team IDs
     home_id = team_to_id.get(home_team_name)
     away_id = team_to_id.get(away_team_name)
     
     if home_id is None or away_id is None:
-        return f"Error: One of the teams not found in team mapping: {home_team_name} or {away_team_name}"
+        return f"Error: One of the teams not found in team mapping: {home_team_name} or {away_team_name}. Debug: Home ID is {home_id}, Away ID is {away_id}"
 
     home_id_tensor = torch.tensor([home_id], dtype=torch.long)
     away_id_tensor = torch.tensor([away_id], dtype=torch.long)
     
-    # 5. Make the prediction
+    # 3. Make the prediction
     model.eval()
     with torch.no_grad():
         output = model(features_tensor.unsqueeze(0), home_id_tensor, away_id_tensor)
@@ -83,32 +63,40 @@ def predict_match(home_team_name, away_team_name, data_loader, model, team_to_id
 if __name__ == '__main__':
     MODEL_PATH = "saved_model/best_model.pth"
     TEAM_MAP_PATH = "saved_model/team_to_id.json"
+    PRECOMPUTED_FEATURES_PATH = "features_2025-26.csv"
 
-    print("Loading model and team mapping...")
+    print("Loading model, team mapping, and pre-computed features...")
+    # Load team mapping
     with open(TEAM_MAP_PATH, 'r') as f:
         team_to_id = json.load(f)
     
+    # Load pre-computed features
+    precomputed_features_df = pd.read_csv(PRECOMPUTED_FEATURES_PATH)
+
     # Infer model parameters from the saved state_dict
     state_dict = torch.load(MODEL_PATH)
-    EMBEDDING_DIM = 10 # This must match the model training
+    EMBEDDING_DIM = 10 
     input_dim_from_model = state_dict['fc1.weight'].shape[1] - (2 * EMBEDDING_DIM)
     num_teams_from_map = len(team_to_id)
 
     model = MatchPredictor(input_dim=input_dim_from_model, num_teams=num_teams_from_map, embedding_dim=EMBEDDING_DIM)
     model.load_state_dict(state_dict)
-    print("Model loaded successfully.")
+    print("All artifacts loaded successfully.")
 
-    # Instantiate and load data into the data loader
-    # This is necessary to access the feature engineering pipeline
-    data_loader = PremierLeagueDataLoader(data_path='..')
-    data_loader.load_data()
+    print("\n--- Live Prediction Example ---")
+    home_team = "Liverpool"
+    away_team = "Man United"
+    
+    result = predict_match(home_team, away_team, model, team_to_id, precomputed_features_df)
+    
+    print(f"Prediction for {home_team} vs. {away_team}:")
+    print(result)
 
-    if data_loader.raw_data is not None:
-        print("\n--- Live Prediction Example ---")
-        home_team = "Arsenal"
-        away_team = "Man United"
-        
-        result = predict_match(home_team, away_team, data_loader, model, team_to_id)
-        
-        print(f"Prediction for {home_team} vs. {away_team}:")
-        print(result)
+    print("\n--- Another Prediction Example ---")
+    home_team_2 = "Liverpool"
+    away_team_2 = "Chelsea"
+    
+    result_2 = predict_match(home_team_2, away_team_2, model, team_to_id, precomputed_features_df)
+    
+    print(f"Prediction for {home_team_2} vs. {away_team_2}:")
+    print(result_2)
