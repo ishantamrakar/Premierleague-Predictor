@@ -532,7 +532,7 @@ current_date = None
 # Regex to find date lines (e.g., "Friday, Aug. 15 2025")
 date_pattern = re.compile(r"^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})")
 # Regex to find match lines (e.g., "Team A vs. Team B")
-match_pattern = re.compile(r"^(.*?)\s+vs\.\s+(.*?)(?:\s+\(.*\))?$")
+match_pattern = re.compile(r"^(.*?)\s+vs\.\s+(.*?)(?:\s+\(.*\)|$|\s*\*)")
 
 for line in fixture_text.strip().split('\n'):
     line = line.strip()
@@ -563,11 +563,12 @@ for line in fixture_text.strip().split('\n'):
         
         # Handle team name inconsistencies
         team_name_map = {
+            "AFC Bournemouth": "Bournemouth",
             "Brighton & Hove Albion": "Brighton",
-            "Nottm Forest": "Nottingham Forest",
-            "Wolverhampton Wanderers": "Wolves", # Corrected to map full name to short name
-            "Manchester United": "Man United", # Corrected to map full name to short name
-            "Manchester City": "Man City", # Corrected to map full name to short name
+            "Nottingham Forest": "Nott'm Forest",
+            "Wolverhampton Wanderers": "Wolves",
+            "Manchester United": "Man United",
+            "Manchester City": "Man City",
             "West Ham United": "West Ham",
             "Tottenham Hotspur": "Tottenham",
             "Newcastle United": "Newcastle",
