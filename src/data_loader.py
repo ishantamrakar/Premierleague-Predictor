@@ -6,27 +6,42 @@ import torch
 import os
 
 class PremierLeagueDataset(Dataset):
-    def __init__(self, data, labels):
+    def __init__(self, data, labels, home_team_ids, away_team_ids):
         self.data = data
         self.labels = labels
+        self.home_team_ids = home_team_ids
+        self.away_team_ids = away_team_ids
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        return self.data[idx], self.labels[idx]
+        return self.data[idx], self.labels[idx], self.home_team_ids[idx], self.away_team_ids[idx]
 
 class PremierLeagueDataLoader:
     def __init__(self, data_path):
         self.data_path = data_path
         self.raw_data = None
         self.processed_data = None
+        self.team_to_id = {}
+        self.id_to_team = {}
+        self.num_teams = 0
+
+    def _create_team_id_mapping(self):
+        if self.raw_data is None:
+            return
+
+        unique_teams = pd.concat([self.raw_data['HomeTeam'], self.raw_data['AwayTeam']]).unique()
+        self.team_to_id = {team: i for i, team in enumerate(sorted(unique_teams))}
+        self.id_to_team = {i: team for team, i in self.team_to_id.items()}
+        self.num_teams = len(unique_teams)
 
     def load_data(self):
         """Loads raw Premier League match data."""
         try:
             csv_path = os.path.join(self.data_path, 'dataset/2000-2025 team stats/epl_final.csv')
-            self.raw_data = pd.read_csv(csv_path, encoding='latin1') # Added encoding for broader compatibility
+            self.raw_data = pd.read_csv(csv_path, encoding='latin1')
+            self._create_team_id_mapping() # Create mapping after loading data
         except FileNotFoundError:
             print(f"Error: Data file not found at {csv_path}")
             self.raw_data = None
@@ -132,14 +147,19 @@ class PremierLeagueDataLoader:
                 h_wins = sum((h2h_matches['HomeTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'H')) + sum((h2h_matches['AwayTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'A'))
                 a_wins = sum((h2h_matches['AwayTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'H')) + sum((h2h_matches['HomeTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'A'))
                 draws = len(h2h_matches) - h_wins - a_wins
-                h_goals = h2h_matches.apply(lambda r: r['FullTimeHomeGoals'] if r['HomeTeam'] == home_team else r['FullTimeAwayGoals'], axis=1).mean()
-                a_goals = h2h_matches.apply(lambda r: r['FullTimeAwayGoals'] if r['HomeTeam'] == home_team else r['FullTimeHomeGoals'], axis=1).mean()
+                
+                # Check if goals lists are empty before taking mean
+                h_goals_list = h2h_matches.apply(lambda r: r['FullTimeHomeGoals'] if r['HomeTeam'] == home_team else r['FullTimeAwayGoals'], axis=1)
+                a_goals_list = h2h_matches.apply(lambda r: r['FullTimeAwayGoals'] if r['HomeTeam'] == home_team else r['FullTimeHomeGoals'], axis=1)
+
+                h_goals_mean = h_goals_list.mean() if not h_goals_list.empty else 0
+                a_goals_mean = a_goals_list.mean() if not a_goals_list.empty else 0
                 
                 features['H2H_HomeWins_Pct'].append(h_wins / len(h2h_matches))
                 features['H2H_Draws_Pct'].append(draws / len(h2h_matches))
                 features['H2H_AwayWins_Pct'].append(a_wins / len(h2h_matches))
-                features['H2H_Home_AvgGoals'].append(h_goals)
-                features['H2H_Away_AvgGoals'].append(a_goals)
+                features['H2H_Home_AvgGoals'].append(h_goals_mean)
+                features['H2H_Away_AvgGoals'].append(a_goals_mean)
             else:
                 for k in ['H2H_HomeWins_Pct', 'H2H_Draws_Pct', 'H2H_AwayWins_Pct', 'H2H_Home_AvgGoals', 'H2H_Away_AvgGoals']: features[k].append(0)
 
@@ -151,9 +171,13 @@ class PremierLeagueDataLoader:
         processed_df['Match_of_the_Season'] = processed_df[['Home_Gameweek', 'Away_Gameweek']].max(axis=1)
         processed_df.drop(columns=['Home_Gameweek', 'Away_Gameweek'], inplace=True)
         
+        # --- Map Team Names to IDs ---
+        processed_df['HomeTeam_ID'] = processed_df['HomeTeam'].map(self.team_to_id)
+        processed_df['AwayTeam_ID'] = processed_df['AwayTeam'].map(self.team_to_id)
+        
         self.processed_data = processed_df
 
-    def get_dataloaders(self, batch_size=32, test_size=0.2, random_state=42):
+    def get_dataloaders(self, batch_size=32):
         if self.processed_data is None:
             return None, None
 
@@ -169,24 +193,44 @@ class PremierLeagueDataLoader:
         
         existing_cols = [col for col in feature_cols if col in self.processed_data.columns]
         
-        self.processed_data.dropna(subset=existing_cols + ['FTR_numerical'], inplace=True)
+        self.processed_data.dropna(subset=existing_cols + ['FTR_numerical', 'HomeTeam_ID', 'AwayTeam_ID'], inplace=True)
 
         X = self.processed_data[existing_cols].values
         y = self.processed_data['FTR_numerical'].values
+        home_team_ids = self.processed_data['HomeTeam_ID'].values
+        away_team_ids = self.processed_data['AwayTeam_ID'].values
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
+        # --- Time-based Split ---
+        seasons = sorted(self.processed_data['Season'].unique())
+        latest_season = seasons[-1]
+        
+        train_indices = self.processed_data[self.processed_data['Season'] != latest_season].index
+        test_indices = self.processed_data[self.processed_data['Season'] == latest_season].index
+
+        X_train, y_train = X[train_indices], y[train_indices]
+        home_team_ids_train, away_team_ids_train = home_team_ids[train_indices], away_team_ids[train_indices]
+
+        X_test, y_test = X[test_indices], y[test_indices]
+        home_team_ids_test, away_team_ids_test = home_team_ids[test_indices], away_team_ids[test_indices]
+
 
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
         y_train_tensor = torch.tensor(y_train, dtype=torch.long)
+        home_team_ids_train_tensor = torch.tensor(home_team_ids_train, dtype=torch.long)
+        away_team_ids_train_tensor = torch.tensor(away_team_ids_train, dtype=torch.long)
+
         X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
         y_test_tensor = torch.tensor(y_test, dtype=torch.long)
+        home_team_ids_test_tensor = torch.tensor(home_team_ids_test, dtype=torch.long)
+        away_team_ids_test_tensor = torch.tensor(away_team_ids_test, dtype=torch.long)
 
-        train_dataset = PremierLeagueDataset(X_train_tensor, y_train_tensor)
-        test_dataset = PremierLeagueDataset(X_test_tensor, y_test_tensor)
+        train_dataset = PremierLeagueDataset(X_train_tensor, y_train_tensor, home_team_ids_train_tensor, away_team_ids_train_tensor)
+        test_dataset = PremierLeagueDataset(X_test_tensor, y_test_tensor, home_team_ids_test_tensor, away_team_ids_test_tensor)
 
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+        print(f"Training on seasons before {latest_season}. Validating on season {latest_season}.")
         return train_loader, test_loader
 
 if __name__ == '__main__':

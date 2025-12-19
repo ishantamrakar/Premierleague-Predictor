@@ -10,9 +10,9 @@ def train(model, train_loader, optimizer, criterion):
     correct = 0
     total = 0
 
-    for data, target in train_loader:
+    for data, target, home_team_ids, away_team_ids in train_loader:
         optimizer.zero_grad()
-        output = model(data)
+        output = model(data, home_team_ids, away_team_ids)
         loss = criterion(output, target)
         loss.backward()
         optimizer.step()
@@ -33,8 +33,8 @@ def evaluate(model, test_loader, criterion):
     total = 0
 
     with torch.no_grad():
-        for data, target in test_loader:
-            output = model(data)
+        for data, target, home_team_ids, away_team_ids in test_loader:
+            output = model(data, home_team_ids, away_team_ids)
             loss = criterion(output, target)
             total_loss += loss.item()
             _, predicted = torch.max(output.data, 1)
@@ -47,22 +47,28 @@ def evaluate(model, test_loader, criterion):
 
 if __name__ == '__main__':
     # Hyperparameters
-    INPUT_DIM = 26 # Number of features from data_loader.py
+    # Original INPUT_DIM from features: 26
+    EMBEDDING_DIM = 10 
+    # New INPUT_DIM for model: Original features + (2 * embedding_dim for home/away teams)
+    INPUT_DIM_MODEL = 26 # This will be the input_dim to the first linear layer after embeddings are concatenated
+
     HIDDEN_DIM = 128
     NUM_CLASSES = 3 # Home, Draw, Away
     LEARNING_RATE = 0.001
     BATCH_SIZE = 64
-    NUM_EPOCHS = 20
+    NUM_EPOCHS = 1000
 
     # Load data
     data_loader = PremierLeagueDataLoader(data_path='.')
-    data_loader.load_data()
+    data_loader.load_data() # This will now also create team ID mappings
     data_loader.preprocess_data()
     train_loader, test_loader = data_loader.get_dataloaders(batch_size=BATCH_SIZE)
 
     if train_loader and test_loader:
+        NUM_TEAMS = data_loader.num_teams # Get number of teams from data_loader
+
         # Initialize model, loss, and optimizer
-        model = MatchPredictor(input_dim=INPUT_DIM, hidden_dim=HIDDEN_DIM, num_classes=NUM_CLASSES)
+        model = MatchPredictor(input_dim=INPUT_DIM_MODEL, num_teams=NUM_TEAMS, embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, num_classes=NUM_CLASSES)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
