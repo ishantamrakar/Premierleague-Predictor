@@ -53,10 +53,10 @@ if __name__ == '__main__':
     INPUT_DIM_MODEL = 26 # This will be the input_dim to the first linear layer after embeddings are concatenated
 
     HIDDEN_DIM = 128
-    NUM_CLASSES = 2 # Home Win vs Away Win (Draws removed)
+    NUM_CLASSES = 3 # Home, Draw, Away
     LEARNING_RATE = 0.001
     BATCH_SIZE = 64
-    NUM_EPOCHS = 20
+    NUM_EPOCHS = 1000
 
     # Load data
     data_loader = PremierLeagueDataLoader(data_path='.')
@@ -65,11 +65,18 @@ if __name__ == '__main__':
     train_loader, test_loader = data_loader.get_dataloaders(batch_size=BATCH_SIZE)
 
     if train_loader and test_loader:
+        # --- Calculate Class Weights ---
+        # Get the full training set labels to calculate weights
+        full_train_labels = train_loader.dataset.labels
+        class_counts = torch.bincount(full_train_labels)
+        class_weights = 1. / class_counts.float()
+        class_weights = class_weights / class_weights.sum() # Normalize
+
         NUM_TEAMS = data_loader.num_teams # Get number of teams from data_loader
 
         # Initialize model, loss, and optimizer
         model = MatchPredictor(input_dim=INPUT_DIM_MODEL, num_teams=NUM_TEAMS, embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, num_classes=NUM_CLASSES)
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
         optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
         # Training loop

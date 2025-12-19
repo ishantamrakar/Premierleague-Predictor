@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MatchPredictor(nn.Module):
-    def __init__(self, input_dim, num_teams, embedding_dim=10, hidden_dim=128, num_classes=2):
+    def __init__(self, input_dim, num_teams, embedding_dim=10, hidden_dim=128, num_classes=3):
         super(MatchPredictor, self).__init__()
         self.team_embedding = nn.Embedding(num_teams, embedding_dim)
         

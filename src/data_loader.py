@@ -53,18 +53,14 @@ class PremierLeagueDataLoader:
 
         processed_df = self.raw_data.copy()
 
-        # --- Filter out Draw cases for the experiment ---
-        processed_df = processed_df[processed_df['FullTimeResult'] != 'D'].copy()
-
         processed_df['MatchDate'] = pd.to_datetime(processed_df['MatchDate'], dayfirst=True)
         processed_df.sort_values(by='MatchDate', inplace=True)
 
-        # Map 'A' to 0 and 'H' to 1
-        result_mapping = {'A': 0, 'H': 1}
+        result_mapping = {'A': 0, 'D': 1, 'H': 2}
         processed_df['FTR_numerical'] = processed_df['FullTimeResult'].map(result_mapping)
         
-        home_points_map = {'H': 3, 'A': 0}
-        away_points_map = {'A': 3, 'H': 0}
+        home_points_map = {'H': 3, 'D': 1, 'A': 0}
+        away_points_map = {'A': 3, 'D': 1, 'H': 0}
         processed_df['HomePoints'] = processed_df['FullTimeResult'].map(home_points_map)
         processed_df['AwayPoints'] = processed_df['FullTimeResult'].map(away_points_map)
 
