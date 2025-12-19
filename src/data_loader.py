@@ -26,7 +26,7 @@ class PremierLeagueDataLoader:
         """Loads raw Premier League match data."""
         try:
             csv_path = os.path.join(self.data_path, 'dataset/2000-2025 team stats/epl_final.csv')
-            self.raw_data = pd.read_csv(csv_path)
+            self.raw_data = pd.read_csv(csv_path, encoding='latin1') # Added encoding for broader compatibility
         except FileNotFoundError:
             print(f"Error: Data file not found at {csv_path}")
             self.raw_data = None
@@ -38,7 +38,7 @@ class PremierLeagueDataLoader:
 
         processed_df = self.raw_data.copy()
 
-        processed_df['MatchDate'] = pd.to_datetime(processed_df['MatchDate'])
+        processed_df['MatchDate'] = pd.to_datetime(processed_df['MatchDate'], dayfirst=True)
         processed_df.sort_values(by='MatchDate', inplace=True)
 
         result_mapping = {'A': 0, 'D': 1, 'H': 2}
@@ -50,89 +50,109 @@ class PremierLeagueDataLoader:
         processed_df['AwayPoints'] = processed_df['FullTimeResult'].map(away_points_map)
 
         processed_df.dropna(subset=['FTR_numerical', 'HomePoints', 'AwayPoints'], inplace=True)
+        
+        # --- Pre-calculate Season Ranks and League Averages ---
+        season_ranks = {}
+        league_averages = {}
+        unique_seasons = processed_df['Season'].unique()
 
-        home_form_list = []
-        away_form_list = []
+        for season in unique_seasons:
+            season_df = processed_df[processed_df['Season'] == season]
+            
+            league_averages[season] = {
+                'avg_home_goals': season_df['FullTimeHomeGoals'].mean(),
+                'avg_away_goals': season_df['FullTimeAwayGoals'].mean()
+            }
+            
+            team_points = {}
+            for team in season_df['HomeTeam'].unique():
+                home_points = season_df[season_df['HomeTeam'] == team]['HomePoints'].sum()
+                away_points = season_df[season_df['AwayTeam'] == team]['AwayPoints'].sum()
+                team_points[team] = home_points + away_points
+            
+            ranked_teams = sorted(team_points.items(), key=lambda item: item[1], reverse=True)
+            season_ranks[season] = {team: rank + 1 for rank, (team, points) in enumerate(ranked_teams)}
+
+        # --- Feature Calculation Loop ---
+        features = {
+            'HomeTeam_Form': [], 'AwayTeam_Form': [], 'Home_Weighted_Form': [], 'Away_Weighted_Form': [],
+            'Home_Attack_Strength': [], 'Home_Defense_Strength': [], 'Away_Attack_Strength': [], 'Away_Defense_Strength': [],
+            'H2H_HomeWins_Pct': [], 'H2H_Draws_Pct': [], 'H2H_AwayWins_Pct': [], 'H2H_Home_AvgGoals': [], 'H2H_Away_AvgGoals': []
+        }
 
         for index, row in processed_df.iterrows():
-            home_team = row['HomeTeam']
-            away_team = row['AwayTeam']
-            match_date = row['MatchDate']
+            home_team, away_team, match_date, season = row['HomeTeam'], row['AwayTeam'], row['MatchDate'], row['Season']
+            
+            # Past matches for form, strength, etc.
+            home_team_matches = processed_df[((processed_df['HomeTeam'] == home_team) | (processed_df['AwayTeam'] == home_team)) & (processed_df['MatchDate'] < match_date)].tail(5)
+            away_team_matches = processed_df[((processed_df['HomeTeam'] == away_team) | (processed_df['AwayTeam'] == away_team)) & (processed_df['MatchDate'] < match_date)].tail(5)
+            
+            # --- Form & Weighted Form ---
+            home_form_points = home_team_matches.apply(lambda r: r['HomePoints'] if r['HomeTeam'] == home_team else r['AwayPoints'], axis=1)
+            features['HomeTeam_Form'].append(home_form_points.sum())
+            
+            away_form_points = away_team_matches.apply(lambda r: r['HomePoints'] if r['HomeTeam'] == away_team else r['AwayPoints'], axis=1)
+            features['AwayTeam_Form'].append(away_form_points.sum())
+            
+            home_weighted_form, away_weighted_form = 0, 0
+            prev_season_str = f"{int(season.split('/')[0]) - 1}/{str(int(season.split('/')[1]) - 1).zfill(2)}"
+            max_rank = len(season_ranks.get(prev_season_str, {}))
 
-            home_team_past_matches = processed_df[((processed_df['HomeTeam'] == home_team) | (processed_df['AwayTeam'] == home_team)) & (processed_df['MatchDate'] < match_date)].tail(5)
-            home_team_points = home_team_past_matches.apply(lambda r: r['HomePoints'] if r['HomeTeam'] == home_team else r['AwayPoints'], axis=1)
-            home_form_list.append(home_team_points.sum())
+            for i, past_match in home_team_matches.iterrows():
+                opponent = past_match['AwayTeam'] if past_match['HomeTeam'] == home_team else past_match['HomeTeam']
+                opponent_rank = season_ranks.get(prev_season_str, {}).get(opponent, max_rank + 1)
+                weight = (max_rank - opponent_rank + 1) / max_rank if max_rank > 0 else 1
+                home_weighted_form += home_form_points.loc[i] * weight
+            features['Home_Weighted_Form'].append(home_weighted_form)
 
-            away_team_past_matches = processed_df[((processed_df['HomeTeam'] == away_team) | (processed_df['AwayTeam'] == away_team)) & (processed_df['MatchDate'] < match_date)].tail(5)
-            away_team_points = away_team_past_matches.apply(lambda r: r['HomePoints'] if r['HomeTeam'] == away_team else r['AwayPoints'], axis=1)
-            away_form_list.append(away_team_points.sum())
+            for i, past_match in away_team_matches.iterrows():
+                opponent = past_match['AwayTeam'] if past_match['HomeTeam'] == away_team else past_match['HomeTeam']
+                opponent_rank = season_ranks.get(prev_season_str, {}).get(opponent, max_rank + 1)
+                weight = (max_rank - opponent_rank + 1) / max_rank if max_rank > 0 else 1
+                away_weighted_form += away_form_points.loc[i] * weight
+            features['Away_Weighted_Form'].append(away_weighted_form)
+            
+            # --- Offensive/Defensive Strength ---
+            league_avgs = league_averages.get(season, {})
+            avg_home_g, avg_away_g = league_avgs.get('avg_home_goals', 1), league_avgs.get('avg_away_goals', 1)
 
-        processed_df['HomeTeam_Form'] = home_form_list
-        processed_df['AwayTeam_Form'] = away_form_list
+            home_scored = home_team_matches.apply(lambda r: r['FullTimeHomeGoals'] if r['HomeTeam'] == home_team else r['FullTimeAwayGoals'], axis=1).mean()
+            home_conceded = home_team_matches.apply(lambda r: r['FullTimeAwayGoals'] if r['HomeTeam'] == home_team else r['FullTimeHomeGoals'], axis=1).mean()
+            away_scored = away_team_matches.apply(lambda r: r['FullTimeHomeGoals'] if r['HomeTeam'] == away_team else r['FullTimeAwayGoals'], axis=1).mean()
+            away_conceded = away_team_matches.apply(lambda r: r['FullTimeAwayGoals'] if r['HomeTeam'] == away_team else r['FullTimeHomeGoals'], axis=1).mean()
 
+            features['Home_Attack_Strength'].append(home_scored / avg_home_g if avg_home_g > 0 and not np.isnan(home_scored) else 1)
+            features['Home_Defense_Strength'].append(home_conceded / avg_away_g if avg_away_g > 0 and not np.isnan(home_conceded) else 1)
+            features['Away_Attack_Strength'].append(away_scored / avg_away_g if avg_away_g > 0 and not np.isnan(away_scored) else 1)
+            features['Away_Defense_Strength'].append(away_conceded / avg_home_g if avg_home_g > 0 and not np.isnan(away_conceded) else 1)
+
+            # --- H2H Stats ---
+            h2h_matches = processed_df[(((processed_df['HomeTeam'] == home_team) & (processed_df['AwayTeam'] == away_team)) | ((processed_df['HomeTeam'] == away_team) & (processed_df['AwayTeam'] == home_team))) & (processed_df['MatchDate'] < match_date)]
+            if not h2h_matches.empty:
+                h_wins = sum((h2h_matches['HomeTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'H')) + sum((h2h_matches['AwayTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'A'))
+                a_wins = sum((h2h_matches['AwayTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'H')) + sum((h2h_matches['HomeTeam'] == home_team) & (h2h_matches['FullTimeResult'] == 'A'))
+                draws = len(h2h_matches) - h_wins - a_wins
+                h_goals = h2h_matches.apply(lambda r: r['FullTimeHomeGoals'] if r['HomeTeam'] == home_team else r['FullTimeAwayGoals'], axis=1).mean()
+                a_goals = h2h_matches.apply(lambda r: r['FullTimeAwayGoals'] if r['HomeTeam'] == home_team else r['FullTimeHomeGoals'], axis=1).mean()
+                
+                features['H2H_HomeWins_Pct'].append(h_wins / len(h2h_matches))
+                features['H2H_Draws_Pct'].append(draws / len(h2h_matches))
+                features['H2H_AwayWins_Pct'].append(a_wins / len(h2h_matches))
+                features['H2H_Home_AvgGoals'].append(h_goals)
+                features['H2H_Away_AvgGoals'].append(a_goals)
+            else:
+                for k in ['H2H_HomeWins_Pct', 'H2H_Draws_Pct', 'H2H_AwayWins_Pct', 'H2H_Home_AvgGoals', 'H2H_Away_AvgGoals']: features[k].append(0)
+
+        for k, v in features.items():
+            processed_df[k] = v
+            
         processed_df['Home_Gameweek'] = processed_df.groupby(['Season', 'HomeTeam']).cumcount() + 1
         processed_df['Away_Gameweek'] = processed_df.groupby(['Season', 'AwayTeam']).cumcount() + 1
         processed_df['Match_of_the_Season'] = processed_df[['Home_Gameweek', 'Away_Gameweek']].max(axis=1)
         processed_df.drop(columns=['Home_Gameweek', 'Away_Gameweek'], inplace=True)
-
-        h2h_home_wins_list = []
-        h2h_draws_list = []
-        h2h_away_wins_list = []
-        h2h_home_avg_goals_list = []
-        h2h_away_avg_goals_list = []
-
-        for index, row in processed_df.iterrows():
-            home_team = row['HomeTeam']
-            away_team = row['AwayTeam']
-            match_date = row['MatchDate']
-
-            h2h_matches = processed_df[
-                ((processed_df['HomeTeam'] == home_team) & (processed_df['AwayTeam'] == away_team)) |
-                ((processed_df['HomeTeam'] == away_team) & (processed_df['AwayTeam'] == home_team))
-            ].loc[processed_df['MatchDate'] < match_date]
-
-            if not h2h_matches.empty:
-                home_wins = 0
-                draws = 0
-                away_wins = 0
-                home_goals = []
-                away_goals = []
-
-                for _, h2h_row in h2h_matches.iterrows():
-                    if h2h_row['HomeTeam'] == home_team:
-                        if h2h_row['FullTimeResult'] == 'H': home_wins += 1
-                        elif h2h_row['FullTimeResult'] == 'D': draws += 1
-                        else: away_wins += 1
-                        home_goals.append(h2h_row['FullTimeHomeGoals'])
-                        away_goals.append(h2h_row['FullTimeAwayGoals'])
-                    else:
-                        if h2h_row['FullTimeResult'] == 'A': home_wins += 1
-                        elif h2h_row['FullTimeResult'] == 'D': draws += 1
-                        else: away_wins += 1
-                        home_goals.append(h2h_row['FullTimeAwayGoals'])
-                        away_goals.append(h2h_row['FullTimeHomeGoals'])
-                
-                total_h2h = len(h2h_matches)
-                h2h_home_wins_list.append(home_wins / total_h2h)
-                h2h_draws_list.append(draws / total_h2h)
-                h2h_away_wins_list.append(away_wins / total_h2h)
-                h2h_home_avg_goals_list.append(np.mean(home_goals) if home_goals else 0)
-                h2h_away_avg_goals_list.append(np.mean(away_goals) if away_goals else 0)
-            else:
-                h2h_home_wins_list.append(0.0)
-                h2h_draws_list.append(0.0)
-                h2h_away_wins_list.append(0.0)
-                h2h_home_avg_goals_list.append(0.0)
-                h2h_away_avg_goals_list.append(0.0)
         
-        processed_df['H2H_HomeWins_Pct'] = h2h_home_wins_list
-        processed_df['H2H_Draws_Pct'] = h2h_draws_list
-        processed_df['H2H_AwayWins_Pct'] = h2h_away_wins_list
-        processed_df['H2H_Home_AvgGoals'] = h2h_home_avg_goals_list
-        processed_df['H2H_Away_AvgGoals'] = h2h_away_avg_goals_list
-
         self.processed_data = processed_df
-        
+
     def get_dataloaders(self, batch_size=32, test_size=0.2, random_state=42):
         if self.processed_data is None:
             return None, None
@@ -142,8 +162,9 @@ class PremierLeagueDataLoader:
             'HomeCorners', 'AwayCorners', 'HomeFouls', 'AwayFouls',
             'HomeYellowCards', 'AwayYellowCards', 'HomeRedCards', 'AwayRedCards',
             'HomeTeam_Form', 'AwayTeam_Form', 'Match_of_the_Season',
-            'H2H_HomeWins_Pct', 'H2H_Draws_Pct', 'H2H_AwayWins_Pct',
-            'H2H_Home_AvgGoals', 'H2H_Away_AvgGoals'
+            'H2H_HomeWins_Pct', 'H2H_Draws_Pct', 'H2H_AwayWins_Pct', 'H2H_Home_AvgGoals', 'H2H_Away_AvgGoals',
+            'Home_Attack_Strength', 'Home_Defense_Strength', 'Away_Attack_Strength', 'Away_Defense_Strength',
+            'Home_Weighted_Form', 'Away_Weighted_Form'
         ]
         
         existing_cols = [col for col in feature_cols if col in self.processed_data.columns]
@@ -174,9 +195,9 @@ if __name__ == '__main__':
     if data_loader.raw_data is not None:
         data_loader.preprocess_data()
         if data_loader.processed_data is not None:
+            print("--- Sample of Processed Data ---")
             print(data_loader.processed_data[[
-                'MatchDate', 'HomeTeam', 'AwayTeam', 'Match_of_the_Season',
-                'H2H_HomeWins_Pct', 'H2H_Draws_Pct', 'H2H_AwayWins_Pct'
-            ]].sample(5))
-
-
+                'HomeTeam', 'AwayTeam', 'Match_of_the_Season', 'HomeTeam_Form', 'AwayTeam_Form', 
+                'Home_Weighted_Form', 'Away_Weighted_Form', 'Home_Attack_Strength', 'Away_Attack_Strength',
+                'H2H_HomeWins_Pct', 'H2H_AwayWins_Pct'
+            ]].sample(10))
